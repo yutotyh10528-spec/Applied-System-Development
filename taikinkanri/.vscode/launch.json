@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "taikinkanri (dev)",
+      "request": "launch",
+      "mainClass": "com.example.taikinkanri.TaikinkanriApplication",
+      "projectName": "taikinkanri",
+      "envFile": "${workspaceFolder}/.env"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: taikinkanri
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/attendance}
+    username: ${DB_USERNAME:attendance}
+    password: ${DB_PASSWORD}
+  sql:
+    init:
+      mode: always   # 起動のたびに schema.sql を実行する
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none   # テーブルは schema.sql で作る
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+attendance:
+  alert-time: "22:00"   # 退勤アラートの基準時刻（設計 B-08）
+  alert-interval-minutes: 30
+  alert-check-interval-ms: 300000
