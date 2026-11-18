@@ -1,0 +1,1069 @@
+openapi: 3.0.3
+info:
+  title: WEB勤怠管理システム API
+  version: 2.3.0
+  description: 勤怠管理システムの画面・API仕様（設計書 v2.3 の2. に対応）。画面の遷移はサーバーが HTML を返すもの（text/html）と、打刻・通知の JSON API に分かれる。認証はセッション（JSESSIONID）。更新系は
+    CSRF トークンが必要。
+servers:
+- url: https://{host}:8443
+  description: 仮想環境（VirtualBox）の開発・デモ環境。証明書は開発用の社内認証局（mkcert）で発行
+  variables:
+    host:
+      default: localhost
+      description: VMのIPアドレス（証明書のSANに含める）
+tags:
+- name: 認証
+- name: 打刻
+- name: 個人情報
+- name: 一覧・集計
+- name: 管理者（勤怠）
+- name: 管理者（ユーザー）
+paths:
+  /login:
+    get:
+      tags:
+      - 認証
+      summary: ログイン画面を表示する（?expired でセッション切れの案内を表示）
+      operationId: showLogin
+      description: '画面: SCR-001　権限: 公開　API-ID: API-01'
+      parameters:
+      - name: expired
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: セッション切れの案内を表示（E-AUTH-003）
+      responses:
+        '200':
+          description: ログイン画面
+          content:
+            text/html:
+              schema:
+                type: string
+      security: []
+    post:
+      tags:
+      - 認証
+      summary: 認証する（Spring Securityのフォームログイン）
+      operationId: login
+      description: '画面: SCR-001, SCR-002　権限: 公開　API-ID: API-02'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                  maxLength: 50
+                password:
+                  type: string
+                  format: password
+                _csrf: &id001
+                  type: string
+                  description: CSRFトークン（画面のhidden項目）
+              required:
+              - username
+              - password
+      responses:
+        '302':
+          description: '成功: /home へ（失敗時は /login?error、ロック時は /login?locked）'
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /home
+        '403':
+          description: CSRFトークンの不一致
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security: []
+  /logout:
+    post:
+      tags:
+      - 認証
+      summary: ログアウトしセッションを破棄する
+      operationId: logout
+      description: '画面: 全画面　権限: 認証済み　API-ID: API-03'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                _csrf: *id001
+      responses:
+        '302':
+          description: ログイン画面へ
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /login
+      security:
+      - cookieAuth: []
+  /password-reset:
+    get:
+      tags:
+      - 認証
+      summary: パスワードは管理者だけが設定できることを案内する画面を表示する
+      operationId: showPasswordNotice
+      description: '画面: SCR-003　権限: 公開　API-ID: API-04'
+      responses:
+        '200':
+          description: パスワードの案内画面（管理者への連絡）
+          content:
+            text/html:
+              schema:
+                type: string
+      security: []
+  /api/attendance/status:
+    get:
+      tags:
+      - 打刻
+      summary: 当日の状態・勤務地・音声通知フラグを取得する（60秒ごとに呼び出す）
+      operationId: getStatus
+      description: '画面: SCR-004, SCR-008　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-06'
+      responses:
+        '200':
+          description: 当日の状態
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceStatus'
+        '401':
+          description: 未認証
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /api/attendance/clock-in:
+    post:
+      tags:
+      - 打刻
+      summary: 出勤を記録する（サーバー時刻と勤務地）
+      operationId: clockIn
+      description: '画面: SCR-004, SCR-008　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-07'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClockInRequest'
+      responses:
+        '201':
+          description: 出勤を記録
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceStatus'
+        '400':
+          description: 勤務地が不正（E-VAL-002）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 未認証
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 本日の勤怠がある（E-ATT-001）、または退勤のない勤務がある（E-ATT-002）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: DB障害（E-SYS-001）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /api/attendance/clock-out:
+    post:
+      tags:
+      - 打刻
+      summary: 退勤を記録する（サーバー時刻）
+      operationId: clockOut
+      description: '画面: SCR-004, SCR-008　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-08'
+      responses:
+        '200':
+          description: 退勤を記録
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceStatus'
+        '401':
+          description: 未認証
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 未出勤（E-ATT-003）または休憩中（E-ATT-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: DB障害（E-SYS-001）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /api/attendance/break-start:
+    post:
+      tags:
+      - 打刻
+      summary: 休憩開始を記録する
+      operationId: breakStart
+      description: '画面: SCR-004, SCR-008　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-09'
+      responses:
+        '200':
+          description: 休憩開始を記録
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceStatus'
+        '401':
+          description: 未認証
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 勤務中でない（E-ATT-003）、または休憩中（E-ATT-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: DB障害（E-SYS-001）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /api/attendance/break-end:
+    post:
+      tags:
+      - 打刻
+      summary: 休憩終了を記録する
+      operationId: breakEnd
+      description: '画面: SCR-004, SCR-008　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-10'
+      responses:
+        '200':
+          description: 休憩終了を記録
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceStatus'
+        '401':
+          description: 未認証
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 休憩中でない（E-ATT-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: DB障害（E-SYS-001）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /api/attendance/location:
+    post:
+      tags:
+      - 打刻
+      summary: 当日の勤務地を変更する
+      operationId: changeLocation
+      description: '画面: SCR-004, SCR-008　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-11'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationRequest'
+      responses:
+        '200':
+          description: 勤務地を変更
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceStatus'
+        '400':
+          description: 勤務地が不正（E-VAL-002）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 未認証
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 当日以外の勤怠（E-ATT-007）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /api/alerts/ack:
+    post:
+      tags:
+      - 打刻
+      summary: 音声通知を確認した（警告の[確認]（A-13）から送る。通知を止める。30分後に再通知されることがある）
+      operationId: ackAlert
+      description: '画面: SCR-004, SCR-008　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-12'
+      responses:
+        '204':
+          description: 音声通知を確認（フラグを解除）
+        '401':
+          description: 未認証
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /attendance/records:
+    get:
+      tags:
+      - 一覧・集計
+      summary: 自分の月別の出退勤記録を表示する
+      operationId: showRecords
+      description: '画面: SCR-005　権限: ROLE_USER / ROLE_ADMIN（本人のみ）　API-ID: API-13'
+      parameters:
+      - &id003
+        name: month
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[0-9]{4}-[0-9]{2}$
+          example: 2026-10
+        description: 年月（YYYY-MM）。省略時は当月。未来の月は当月に戻す
+      responses:
+        '200':
+          description: 出退勤記録表（SCR-005）
+          content:
+            text/html:
+              schema:
+                type: string
+        '302':
+          description: 未認証はログイン画面へ
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /login
+      security:
+      - cookieAuth: []
+  /profile:
+    get:
+      tags:
+      - 個人情報
+      summary: 個人情報変更画面を表示する
+      operationId: showProfile
+      description: '画面: SCR-006　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-14'
+      responses:
+        '200':
+          description: 個人情報変更画面（SCR-006）
+          content:
+            text/html:
+              schema:
+                type: string
+      security:
+      - cookieAuth: []
+    post:
+      tags:
+      - 個人情報
+      summary: 自分の電話番号・メールアドレスを更新する（どちらも任意）
+      operationId: updateProfile
+      description: '画面: SCR-006　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-15'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                phoneNumber:
+                  type: string
+                  maxLength: 13
+                  description: 任意（登録のみ。パスワードの再設定には使わない）
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+                  description: 任意（登録のみ。パスワードの再設定には使わない）
+                _csrf: *id001
+      responses:
+        '302':
+          description: 保存成功（/profile?saved）
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /profile?saved
+        '400':
+          description: 入力エラー
+          content:
+            text/html:
+              schema:
+                type: string
+      security:
+      - cookieAuth: []
+  /department/attendance:
+    get:
+      tags:
+      - 一覧・集計
+      summary: 同一部署の当日の勤怠状況を表示する（同一部署は最大50名のためページ送りなし）
+      operationId: showDepartment
+      description: '画面: SCR-007　権限: ROLE_USER / ROLE_ADMIN　API-ID: API-16'
+      parameters:
+      - &id002
+        name: date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+          example: '2026-11-10'
+        description: 日付（YYYY-MM-DD）。省略時は今日（JST）
+      responses:
+        '200':
+          description: 部署内勤怠状況一覧（SCR-007）
+          content:
+            text/html:
+              schema:
+                type: string
+      security:
+      - cookieAuth: []
+  /admin/attendance:
+    get:
+      tags:
+      - 管理者（勤怠）
+      summary: 全社員の指定日の勤怠を表示する（1ページ50名。部署・名前行で絞り込み、60秒ごとに自動更新）
+      operationId: showAllAttendance
+      description: '画面: SCR-009　権限: ROLE_ADMIN　API-ID: API-17'
+      parameters:
+      - *id002
+      - name: departmentId
+        in: query
+        required: false
+        schema:
+          type: integer
+        description: 部署ID（省略時は全部署）
+      - name: initial
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - あ
+          - か
+          - さ
+          - た
+          - な
+          - は
+          - ま
+          - や
+          - ら
+          - わ
+        description: 名前の行（省略時は全て）
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+        description: 1ページ50名。1から始まる
+      responses:
+        '200':
+          description: 社員全員勤怠管理表（SCR-009）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /admin/users/{userId}/attendance:
+    get:
+      tags:
+      - 管理者（勤怠）
+      summary: 指定ユーザーの月別の記録と月間合計を表示する
+      operationId: showUserAttendance
+      description: '画面: SCR-010　権限: ROLE_ADMIN　API-ID: API-18'
+      parameters:
+      - &id004
+        name: userId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+        description: ユーザーID
+      - *id003
+      responses:
+        '200':
+          description: 社員ごとの詳細勤怠管理表（SCR-010）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 該当ユーザーなし（E-USR-006）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /api/admin/attendances/{attendanceId}:
+    put:
+      tags:
+      - 管理者（勤怠）
+      summary: 勤怠（出勤・退勤・休憩・勤務地）を修正する
+      operationId: updateAttendance
+      description: '画面: SCR-013　権限: ROLE_ADMIN　API-ID: API-19'
+      parameters:
+      - name: attendanceId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+        description: 勤怠ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAttendanceUpdateRequest'
+      responses:
+        '200':
+          description: 更新後の勤怠
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceDetail'
+        '400':
+          description: 日時の前後関係・休憩の不整合（E-VAL-002/E-VAL-004/E-ATT-005）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 勤怠なし
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 版の不一致（E-ATT-006）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /admin/users/new:
+    get:
+      tags:
+      - 管理者（ユーザー）
+      summary: 新規ユーザー登録画面を表示する
+      operationId: showNewUser
+      description: '画面: SCR-011　権限: ROLE_ADMIN　API-ID: API-20'
+      responses:
+        '200':
+          description: 新規ユーザー登録画面（SCR-011）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /admin/users:
+    post:
+      tags:
+      - 管理者（ユーザー）
+      summary: 新規ユーザーを登録する
+      operationId: createUser
+      description: '画面: SCR-011　権限: ROLE_ADMIN　API-ID: API-21'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 50
+                phoneNumber:
+                  type: string
+                  description: 任意（登録のみ。パスワードの再設定には使わない）
+                email:
+                  type: string
+                  format: email
+                  description: 任意（登録のみ。パスワードの再設定には使わない）
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  maxLength: 72
+                passwordConfirm:
+                  type: string
+                  format: password
+                departmentId:
+                  type: integer
+                role:
+                  $ref: '#/components/schemas/Role'
+                _csrf: *id001
+              required:
+              - username
+              - password
+              - passwordConfirm
+              - departmentId
+              - role
+      responses:
+        '302':
+          description: 登録成功（/admin/attendance?created）
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /admin/attendance?created
+        '400':
+          description: 入力エラー（E-VAL-001/002/003）・ユーザー名重複（E-USR-001）・人数上限（E-USR-004）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /admin/users/{userId}/edit:
+    get:
+      tags:
+      - 管理者（ユーザー）
+      summary: ユーザー情報編集画面を表示する（パスワードの設定欄を含む）
+      operationId: showEditUser
+      description: '画面: SCR-012　権限: ROLE_ADMIN　API-ID: API-22'
+      parameters:
+      - *id004
+      responses:
+        '200':
+          description: ユーザー情報編集画面（SCR-012）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 該当ユーザーなし（E-USR-006）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /admin/users/{userId}:
+    post:
+      tags:
+      - 管理者（ユーザー）
+      summary: ユーザー情報（連絡先・部署・権限）を更新する（パスワードは含まない。パスワードは API-25）
+      operationId: updateUser
+      description: '画面: SCR-012　権限: ROLE_ADMIN　API-ID: API-23'
+      parameters:
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                phoneNumber:
+                  type: string
+                  description: 任意（登録のみ。パスワードの再設定には使わない）
+                email:
+                  type: string
+                  format: email
+                  description: 任意（登録のみ。パスワードの再設定には使わない）
+                departmentId:
+                  type: integer
+                role:
+                  $ref: '#/components/schemas/Role'
+                version:
+                  type: integer
+                  format: int64
+                _csrf: *id001
+              required:
+              - username
+              - departmentId
+              - role
+              - version
+      responses:
+        '302':
+          description: 更新成功（/admin/attendance?updated）
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /admin/attendance?updated
+        '400':
+          description: 入力エラー・ユーザー名重複・人数上限・最後の管理者（E-USR-001/003/004）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 該当ユーザーなし（E-USR-006）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 版の不一致（E-USR-005）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /admin/users/{userId}/delete:
+    post:
+      tags:
+      - 管理者（ユーザー）
+      summary: ユーザーを論理削除する
+      operationId: deleteUser
+      description: '画面: SCR-009　権限: ROLE_ADMIN　API-ID: API-24'
+      parameters:
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+                  format: int64
+                _csrf: *id001
+              required:
+              - version
+      responses:
+        '302':
+          description: 削除成功（/admin/attendance?deleted）
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /admin/attendance?deleted
+        '400':
+          description: 自分自身（E-USR-002）または最後の管理者（E-USR-003）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 該当ユーザーなし（E-USR-006）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 版の不一致（E-USR-005）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+  /admin/users/{userId}/password:
+    post:
+      tags:
+      - 管理者（ユーザー）
+      summary: 利用者のパスワードを設定する（管理者）。対象ユーザーのセッションを失効し、ロックを解除する
+      operationId: setUserPassword
+      description: '画面: SCR-012　権限: ROLE_ADMIN　API-ID: API-25'
+      parameters:
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 8
+                  maxLength: 72
+                  description: 英字と数字を含む
+                newPasswordConfirm:
+                  type: string
+                  format: password
+                _csrf: *id001
+              required:
+              - newPassword
+              - newPasswordConfirm
+      responses:
+        '302':
+          description: 設定成功（/admin/users/{userId}/edit?passwordSet）
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /admin/users/{userId}/edit?passwordSet
+        '400':
+          description: 入力エラー（E-VAL-002）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 一般ユーザー（E-AUTH-004）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 該当ユーザーなし（E-USR-006）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - cookieAuth: []
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: JSESSIONID
+      description: セッションID（HttpOnly・Secure・SameSite=Lax）
+  schemas:
+    Role:
+      type: string
+      enum:
+      - ROLE_USER
+      - ROLE_ADMIN
+    WorkLocation:
+      type: string
+      enum:
+      - 本社
+      - 支社
+      - 在宅
+      - 出張
+    ErrorResponse:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: E-ATT-001
+        message:
+          type: string
+          example: 本日は既に出勤が記録されています
+        timestamp:
+          type: string
+          format: date-time
+    AttendanceStatus:
+      type: object
+      required:
+      - state
+      - alertVoice
+      properties:
+        state:
+          type: string
+          enum:
+          - NOT_STARTED
+          - WORKING
+          - BREAKING
+          - FINISHED
+          description: 未出勤／勤務中／休憩中／退勤済
+        workDate:
+          type: string
+          format: date
+          nullable: true
+        clockInAt:
+          type: string
+          format: date-time
+          nullable: true
+        clockOutAt:
+          type: string
+          format: date-time
+          nullable: true
+        workLocation:
+          $ref: '#/components/schemas/WorkLocation'
+        alertVoice:
+          type: boolean
+          description: 音声通知を再生するか（真なら画面で alarm.wav を再生し、API-12 で確認する）
+        message:
+          type: string
+          nullable: true
+    ClockInRequest:
+      type: object
+      required:
+      - workLocation
+      properties:
+        workLocation:
+          $ref: '#/components/schemas/WorkLocation'
+    LocationRequest:
+      type: object
+      required:
+      - workLocation
+      properties:
+        workLocation:
+          $ref: '#/components/schemas/WorkLocation'
+    BreakTime:
+      type: object
+      required:
+      - breakStartAt
+      properties:
+        breakStartAt:
+          type: string
+          format: date-time
+        breakEndAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: NULLは休憩中
+    AdminAttendanceUpdateRequest:
+      type: object
+      required:
+      - clockInAt
+      - workLocation
+      - breaks
+      - version
+      properties:
+        clockInAt:
+          type: string
+          format: date-time
+        clockOutAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: NULLは勤務中
+        workLocation:
+          $ref: '#/components/schemas/WorkLocation'
+        breaks:
+          type: array
+          items:
+            $ref: '#/components/schemas/BreakTime'
+        version:
+          type: integer
+          format: int64
+          description: 取得時点の版（楽観ロック）
+    AttendanceDetail:
+      type: object
+      properties:
+        attendanceId:
+          type: integer
+          format: int64
+        workDate:
+          type: string
+          format: date
+        clockInAt:
+          type: string
+          format: date-time
+        clockOutAt:
+          type: string
+          format: date-time
+          nullable: true
+        workLocation:
+          $ref: '#/components/schemas/WorkLocation'
+        workMinutes:
+          type: integer
+          nullable: true
+          description: 実労働時間（分）。未退勤はnull
+        breakMinutes:
+          type: integer
+          description: 総休憩時間（分）
+        version:
+          type: integer
+          format: int64
+        breaks:
+          type: array
+          items:
+            $ref: '#/components/schemas/BreakTime'
